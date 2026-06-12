@@ -87,7 +87,9 @@ class BilibiliPlatformEvent(AstrMessageEvent):
         # 解析接收者 ID
         receiver_id = self._resolve_receiver_id()
         if receiver_id is None:
-            logger.error(f"無法解析 receiver_id，session_id={self.get_session_id()}，取消發送。")
+            logger.error(
+                f"無法解析 receiver_id，session_id={self.get_session_id()}，取消發送。"
+            )
             return
 
         # 迭代消息鏈，合併連續文本
@@ -116,19 +118,27 @@ class BilibiliPlatformEvent(AstrMessageEvent):
                     if hasattr(item, "path") and item.path:
                         cache_key = item.path
                         try:
-                            image_bytes = await asyncio.to_thread(_read_file_bytes, item.path)
+                            image_bytes = await asyncio.to_thread(
+                                _read_file_bytes, item.path
+                            )
                         except Exception as e:
                             logger.error(f"從路徑讀取圖片失敗: {item.path}, 錯誤: {e}")
                     elif hasattr(item, "url") and item.url:
                         cache_key = item.url
-                        image_bytes = await self.client.download_image_from_url(item.url)
+                        image_bytes = await self.client.download_image_from_url(
+                            item.url
+                        )
                     elif hasattr(item, "raw") and item.raw:
                         image_bytes = item.raw
 
                     if image_bytes:
-                        image_info = await self.client.upload_image(image_bytes, cache_key=cache_key)
+                        image_info = await self.client.upload_image(
+                            image_bytes, cache_key=cache_key
+                        )
                         if image_info:
-                            await self.client.send_image_message(receiver_id, image_info)
+                            await self.client.send_image_message(
+                                receiver_id, image_info
+                            )
                         else:
                             logger.error("上傳圖片到 Bilibili 失敗。")
                     else:

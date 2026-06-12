@@ -1,80 +1,111 @@
-# AstrBot Bilibili 私信適配器插件開發文檔
+# AstrBot Bilibili 私信適配器 - 開發文檔
 
-## 1. 項目概述（當前實現）
+> 適用版本：插件 v0.2.0+ / AstrBot >= 4.25
 
-- **定位**: 基於逆向工程的非官方 API 的 Bilibili 私信平台適配器插件。
-- **技術棧**: Python 3.10、asyncio、aiohttp、AstrBot 插件機制。
-- **認證**: 瀏覽器 Cookie（`SESSDATA`, `bili_jct`）+ 设备標識（`device_id`, `user_agent`）。
-- **消息類型**: 文本、圖片（更多類型可擴展）。
+## 1. 項目概述
 
-## 2. 架構與文件
+- **定位**：基於逆向工程的非官方 API 的 Bilibili 私信平台適配器插件。
+- **技術棧**：Python 3.10+、asyncio、aiohttp、AstrBot 插件機制。
+- **認證**：瀏覽器 Cookie（`SESSDATA`, `bili_jct`）+ 設備標識（`device_id`, `user_agent`）。
+- **風控**：發送私信需 WBI 簽名（`wts` + `w_rid`）與 buvid 指紋 Cookie。
+- **消息類型**：文本、圖片（更多類型可擴展）。
 
-- **`bilibili_client.py`**: Bilibili API 客戶端。負責 HTTP 請求、圖片上傳、消息獲取/發送、ACK 更新等。
-- **`bilibili_adapter.py`**: 平台適配器。負責註冊、初始化、主輪詢、會話處理、消息轉換與事件提交。
-- **`bilibili_event.py`**: 平台事件。負責發送策略（文本合併、圖片上傳與發送、接收者解析）。
-- **`main.py`**: 插件入口。負責導入與卸載清理（熱重載）。
+## 2. 架構與職責劃分
 
-## 3. 平台註冊與熱重載策略
+| 文件 | 職責 |
+| --- | --- |
+| `main.py` | 插件入口（`Star`）。導入 `bilibili_adapter` 即完成適配器註冊。 |
+| `bilibili_adapter.py` | 平台適配器。配置校驗、主輪詢、會話處理、消息轉換、事件提交。 |
+| `bilibili_client.py` | API 客戶端。HTTP 請求、WBI 簽名、buvid 管理、圖片上傳/快取、消息收發、ACK。 |
+| `bilibili_event.py` | 平台事件。發送策略：文本合併、圖片三來源處理、接收者解析。 |
+| `bilibili_config.py` | 配置定義。默認模板、WebUI 表單元數據、i18n 文案。 |
+| `bilibili_wbi.py` | WBI 簽名純函數：mixin key 重排 + 參數排序 + MD5。 |
 
-- 使用 `@register_platform_adapter("bilibili", "Bilibili Adapter", default_config_tmpl=..., adapter_display_name="Bilibili", logo_path="assets/bilibili.svg")` 註冊。
-- 插件初始化時，`main.py` 在導入適配器前嘗試清理既有的 `bilibili` 註冊（僅清理本插件來源），避免熱重載重複註冊。無模組頂層副作用，不使用 `__del__`。
-- 核心 `register.py` 對重名有嚴格保護：若重複註冊將直接 `ValueError`。
+依賴方向：`main → adapter → {client, config, event}`，`client → wbi`。`config` 與 `wbi` 為無外部依賴的葉子模組。
 
-## 4. 配置與表單注入
+## 3. 平台註冊與熱重載
 
-- `default_config_tmpl`（節選）：
-  - 核心：`id`, `type=bilibili`, `enable`, `SESSDATA`, `bili_jct`, `device_id`, `user_agent`。
-  - 輪詢：`polling_interval`, `min_polling_interval`, `max_polling_interval`, `max_retry_count`。
-  - 網絡：`timeout_total`, `timeout_connect`, `timeout_sock_read`, `connection_limit`, `connection_limit_per_host`, `dns_cache_ttl`, `keepalive_timeout`。
-  - API：`message_batch_size`, `api_build_version`, `api_mobi_app`。
-  - 訊息處理（可選）：`process_read_messages`（默認 False）、`read_prefetch_window`（範圍 1-10，默認 1）。
-- UI 字段元數據注入：`_inject_astrbot_field_metadata()` 謹慎補齊 `CONFIG_METADATA_2` 的 `items` 描述（只在結構匹配時生效）。不匹配時靜默跳過並打印 debug 日誌。
+- 註冊使用 v4.25+ 的完整參數：
 
-## 5. 客戶端與端點
+```python
+@register_platform_adapter(
+    "bilibili",
+    "Bilibili 私信适配器",
+    default_config_tmpl=DEFAULT_CONFIG_TMPL,
+    config_metadata=CONFIG_METADATA,      # WebUI 表單元數據（PR #5045）
+    i18n_resources=I18N_RESOURCES,        # 多語言文案
+    support_streaming_message=False,
+    adapter_display_name="Bilibili",
+    logo_path="assets/bilibili.svg",
+)
+```
 
-- 端點：
-  - `GET /x/space/myinfo`（獲取自身 UID）。
-  - `GET /session_svr/v1/session_svr/new_sessions`（拉取新會話）。
-  - `GET /svr_sync/v1/svr_sync/fetch_session_msgs`（拉取會話內消息）。
-  - `POST /web_im/v1/web_im/send_msg`（發送文本/圖片消息）。
-  - `POST /x/dynamic/feed/draw/upload_bfs`（圖片上傳）。
-  - `POST /session_svr/v1/session_svr/update_ack`（更新 ACK）。
-- 客戶端要點：
-  - 統一 `aiohttp.ClientSession` 與連接池配置；安全 JSON 解析；圖片上傳快取；自動關停 session。
+- **基類簽名**（v4.25+）：`Platform.__init__(self, config: dict, event_queue: Queue)`，子類須 `super().__init__(platform_config, event_queue)`。
+- **熱重載**：核心 `star_manager` 在插件重載時調用 `unregister_platform_adapters_by_module()` 按模組路徑注銷適配器，插件側無需（也不應）手動清理註冊表。
+- 核心 `register.py` 對重名有嚴格保護：重複註冊將拋出 `ValueError`。
 
-## 6. 主循環與消息處理
+## 4. 配置體系（bilibili_config.py）
 
-- 啟動：創建 `BilibiliClient` -> `get_my_info()` 成功後開始輪詢。
-- 拉取：`get_new_sessions(begin_ts)` -> 遍歷 `session_list`（忽略 `talker_id=0` 系統通知）。
-- 處理會話：`_process_unread_session()` -> `get_messages()` -> 依序轉換並提交事件 -> `update_ack()`。
-- 已讀處理（可選）：當 `unread_count == 0` 且檢測到 ACK 提升，且 `process_read_messages=true` 時，觸發 `_process_recent_read_session()`，以 `read_prefetch_window`（1-10）回溯近期消息，結合啟動時間與已處理水位去重。
-- 轉換：`convert_message()` 生成 `AstrBotMessage`：
-  - 文本：`[Plain(text)]`。
-  - 圖片：`[Image.fromURL(url)]`。
-  - 時間戳兼容（毫秒/秒）；`abm.id = f"{session_talker_id}-{msg_seqno}"`；`abm.session_id = str(session_talker_id)`；`abm.self_id` 取自啟動時獲得的 UID。
+三個導出常量，職責分離：
 
-## 7. 發送策略（BilibiliPlatformEvent）
+- **`DEFAULT_CONFIG_TMPL`**：用戶配置的默認值。核心（`id`/`type`/`enable`/Cookie 四項）、消息處理、輪詢、網絡、API 五組。
+- **`CONFIG_METADATA`**：`{key: {description, type, hint}}`，WebUI 據此生成表單。未提供時 WebUI 退化為原始鍵值對編輯框。
+- **`I18N_RESOURCES`**：`{"zh-CN": {...}, "en-US": {...}}`。zh-CN 由 `CONFIG_METADATA` 派生（單一事實來源），en-US 單獨維護。
 
-- **文本合併**：遍歷消息段列表（兼容 `MessageChain`/`list`），連續的 `Plain` 合併為單條私信，符合用戶期望的 UX。
-- **接收者解析**：優先將 `session_id` 轉為整數；失敗時回退到 `message_obj.sender.user_id`。
-- **圖片處理**：
-  - 支援 `path`/`url`/`raw` 三種來源；本地讀檔使用 `asyncio.to_thread()` 避免阻塞。
-  - 上傳至 BFS，命中快取則復用；成功後再發送圖片私信。
-- **可觀測性**：不支持的組件記錄 `warning`，便於檢測消息缺失。
+新增配置項時需同步三處：`DEFAULT_CONFIG_TMPL`、`CONFIG_METADATA`、`_I18N_EN_US`，並視需要在 `_validate_config()` 的 `numeric_params` 中補充範圍校驗。
 
-## 8. 網絡與性能
+## 5. 客戶端要點（bilibili_client.py)
 
-- 可配置的超時（total/connect/read）、連接池（limit/per_host）、DNS TTL、Keep-Alive。
-- 啟動時間戳 `_startup_ts` 過濾離線期間舊消息（只 ACK，不回覆）。
-- 自適應輪詢間隔：連續空輪詢逐步放大，收到消息時收斂。
+### 端點常量
 
-## 9. 安全與日誌
+模組頂部集中定義，消息類接口走 `api.vc.bilibili.com`，其餘走 `api.bilibili.com`。
+
+### WBI 簽名與風控
+
+- `_get_wbi_keys()`：從 `/x/web-interface/nav` 響應的 `wbi_img` 提取 img_key/sub_key，TTL 快取 12 小時，支持 `force_refresh`。
+- `_sign_wbi_params()`：調用 `bilibili_wbi.sign_params()` 生成帶 `wts`/`w_rid` 的查詢參數。
+- `_ensure_buvid()`：從 `/x/frontend/finger/spi` 獲取 buvid3/buvid4，注入 `self._cookies` 與 session cookie_jar。
+- `_send_message()`：簽名參數掛 query string，表單走 body；收到 412 時刷新密鑰與 buvid 後重試一次。
+
+### 其它
+
+- `_build_msg_payload()`：統一構造私信表單（文本 `msg_type=1` / 圖片 `msg_type=2`），`build`/`mobi_app` 取自配置。
+- `upload_image()`：LRU + TTL 快取（鍵為圖片 path/url），命中跳過上傳。
+- `_safe_json_from_response()`：非 JSON 響應返回 None 並打印精簡片段。
+- 統一 `aiohttp.ClientSession`：超時/連接池/DNS TTL/Keep-Alive 全部可配置。
+
+## 6. 主循環與消息處理（bilibili_adapter.py）
+
+- **啟動**：創建 `BilibiliClient` → `get_my_info()` 成功後記錄 `_startup_ts` 並開始輪詢。
+- **拉取**：`get_new_sessions(begin_ts)` → 遍歷 `session_list`（忽略 `talker_id=0` 系統通知）。
+- **未讀處理**：`_process_unread_session()` → `get_messages()` → 逐條轉換提交 → `update_ack()`。
+- **已讀處理（可選）**：`unread_count == 0` 且 ACK 提升且 `process_read_messages=true` 時觸發 `_process_recent_read_session()`，按 `read_prefetch_window` 回溯，結合 `_startup_ts` 與已處理水位去重。
+- **時間戳**：模組級 `_normalize_timestamp()` 統一處理數字/字符串/毫秒級輸入，三處調用（未讀、已讀、轉換）。
+- **轉換**：`convert_message()` 生成 `AstrBotMessage`：
+  - 文本：`[Plain(text)]`；圖片：`[Image.fromURL(url)]`（含非標準 JSON 的正則回退）。
+  - `abm.id = f"{session_talker_id}-{msg_seqno}"`；`abm.session_id = str(session_talker_id)`；`abm.self_id` 取啟動時 UID。
+- **退出**：循環結束統一關閉 client，`terminate()` 走 `shutdown()`。
+
+## 7. 發送策略（bilibili_event.py）
+
+- **文本合併**：遍歷消息鏈，連續 `Plain` 緩衝合併為單條私信；遇圖片或結尾時沖刷。
+- **接收者解析**：`session_id` 轉整型優先，失敗回退 `message_obj.sender.user_id`。
+- **圖片處理**：支持 `path`/`url`/`raw` 三種來源；本地讀檔用 `asyncio.to_thread()`；上傳命中快取則復用。
+- **可觀測性**：不支持的組件記錄 `warning`。
+
+## 8. 開發規範
 
 - 日誌只使用 `from astrbot.api import logger`。
-- API 調用與關鍵節點全面 `try/except`，並打印簡潔上下文。
+- 網絡請求只使用 aiohttp（異步），禁止 requests。
+- 提交前運行 `ruff check .` 與 `ruff format .`。
+- API 調用與關鍵節點均需 try/except 並保留 `asyncio.CancelledError` 直接 raise。
+- 新依賴須同步寫入 `requirements.txt`。
 
-## 10. 測試與驗收建議
+## 9. 測試與驗收建議
 
-  - 文本聚合：`Plain('A'), Plain('B')` 僅發一條 `AB`。
-  - 圖文混排：文本→圖片→文本，圖片前應先沖刷文本。
-  - `session_id` 非數字時使用回退 ID。
+- **文本聚合**：`Plain('A'), Plain('B')` 僅發一條 `AB`。
+- **圖文混排**：文本→圖片→文本，圖片前應先沖刷文本緩衝。
+- **接收者回退**：`session_id` 非數字時使用 `sender.user_id`。
+- **412 重試**：模擬發送被風控，驗證刷新 WBI/buvid 後重試一次的行為。
+- **離線消息**：啟動前的舊消息應只 ACK 不回覆。
+- **WebUI 表單**：確認各配置項顯示可讀標題與提示（zh-CN / en-US）。

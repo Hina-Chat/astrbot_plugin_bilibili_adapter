@@ -1,9 +1,10 @@
 import asyncio
 import json
-import re
 import random
+import re
 from datetime import datetime
 from typing import Optional
+
 import aiohttp
 
 from astrbot.api import logger
@@ -18,214 +19,53 @@ from astrbot.api.platform import (
 )
 
 from .bilibili_client import BilibiliClient
+from .bilibili_config import CONFIG_METADATA, DEFAULT_CONFIG_TMPL, I18N_RESOURCES
 from .bilibili_event import BilibiliPlatformEvent
 
-def _inject_astrbot_field_metadata():
-    try:
-        from astrbot.core.config.default import CONFIG_METADATA_2
 
-        pg = CONFIG_METADATA_2.get("platform_group")
-        if not isinstance(pg, dict):
-            return
-        metadata = pg.get("metadata")
-        if not isinstance(metadata, dict):
-            return
-        platform = metadata.get("platform")
-        if not isinstance(platform, dict):
-            return
-        items = platform.get("items")
-        if not isinstance(items, dict):
-            return
+def _normalize_timestamp(raw) -> Optional[int]:
+    """将时间戳归一化为秒级整数。
 
-        bilibili_items = {
-            # 核心认证
-            "SESSDATA": {
-                "description": "SESSDATA",
-                "type": "string",
-                "hint": "必填项。浏览器 Cookie 中的 SESSDATA，用于认证。建议定期更新。",
-                "obvious_hint": True,
-            },
-            "bili_jct": {
-                "description": "bili_jct",
-                "type": "string",
-                "hint": "必填项。浏览器 Cookie 中的 bili_jct（CSRF Token）。发送消息必需。",
-                "obvious_hint": True,
-            },
-            "device_id": {
-                "description": "设备ID",
-                "type": "string",
-                "hint": "必填。用于模拟设备标识。",
-                "obvious_hint": True,
-            },
-            "user_agent": {
-                "description": "User-Agent",
-                "type": "string",
-                "hint": "必填。需提供浏览器 UA 字符串。",
-                "obvious_hint": True,
-            },
-            
-            # 訊息處理
-            "process_read_messages": {
-                "description": "处理已读消息",
-                "type": "bool",
-                "hint": "默认 False。开启后，会尝试处理新到但已被标记为已读的消息。",
-            },
-            "read_prefetch_window": {
-                "description": "已读回溯窗口",
-                "type": "int",
-                "hint": "默认为 1。开启『处理已读消息』时生效，设定回溯抓取的最近消息条数。",
-            },
-
-            # 轮询
-            "polling_interval": {
-                "description": "轮询间隔(秒)",
-                "type": "int",
-                "hint": "默认 5。用于拉取新会话的基础间隔。",
-            },
-            "min_polling_interval": {
-                "description": "最小轮询间隔(秒)",
-                "type": "int",
-                "hint": "默认 2。自适应调整下限。",
-            },
-            "max_polling_interval": {
-                "description": "最大轮询间隔(秒)",
-                "type": "int",
-                "hint": "默认 30。自适应调整上限。",
-            },
-            "max_retry_count": {
-                "description": "最大重试次数",
-                "type": "int",
-                "hint": "默认 3。连续异常时的最大重试次数。",
-            },
-
-            # 网络
-            "timeout_total": {
-                "description": "总超时(秒)",
-                "type": "int",
-                "hint": "默认 30。整体请求的最大耗时。",
-            },
-            "timeout_connect": {
-                "description": "连接超时(秒)",
-                "type": "int",
-                "hint": "默认 10。TCP 连接建立超时。",
-            },
-            "timeout_sock_read": {
-                "description": "读取超时(秒)",
-                "type": "int",
-                "hint": "默认 20。收到响应后的读取超时。",
-            },
-            "connection_limit": {
-                "description": "连接池限额",
-                "type": "int",
-                "hint": "默认 100。HTTP 客户端总并发连接上限。",
-            },
-            "connection_limit_per_host": {
-                "description": "单主机连接上限",
-                "type": "int",
-                "hint": "默认 30。对同一主机的并发连接上限。",
-            },
-            "dns_cache_ttl": {
-                "description": "DNS 缓存 TTL(秒)",
-                "type": "int",
-                "hint": "默认 300。DNS 解析缓存时间。",
-            },
-            "keepalive_timeout": {
-                "description": "Keep-Alive 超时(秒)",
-                "type": "int",
-                "hint": "默认 60。空闲连接保活时间。",
-            },
-
-            # API
-            "message_batch_size": {
-                "description": "消息批量大小",
-                "type": "int",
-                "hint": "默认 20。每次获取的消息数量。",
-            },
-            "api_build_version": {
-                "description": "API 构建版本",
-                "type": "int",
-                "hint": "默认 0。保留字段。",
-            },
-            "api_mobi_app": {
-                "description": "应用标识",
-                "type": "string",
-                "hint": "默认 web。",
-            },
-        }
-
-        # 仅在缺失时新增；若已存在则尽量补齐缺失的字段
-        for k, v in bilibili_items.items():
-            if k not in items:
-                items[k] = v
-            else:
-                it = items[k]
-                if "description" not in it and "description" in v:
-                    it["description"] = v["description"]
-                if "type" not in it and "type" in v:
-                    it["type"] = v["type"]
-                if "hint" not in it and "hint" in v:
-                    it["hint"] = v["hint"]
-                if "obvious_hint" not in it and "obvious_hint" in v:
-                    it["obvious_hint"] = v["obvious_hint"]
-
-        logger.debug("已为 Bilibili 适配器注入字段元数据")
-    except Exception as e:
+    兼容数字/字符串与毫秒级输入；解析失败返回 None。
+    """
+    ts: Optional[int] = None
+    if isinstance(raw, (int, float)):
+        ts = int(raw)
+    elif isinstance(raw, str):
         try:
-            logger.debug(f"注入 bilibili 字段元数据失败: {e}")
-        except Exception:
-            pass
+            ts = int(float(raw))
+        except ValueError:
+            return None
+    if ts is None:
+        return None
+    if ts > 10**12:  # 毫秒级时间戳
+        ts //= 1000
+    return ts
+
 
 @register_platform_adapter(
     "bilibili",
-    "Bilibili Adapter",
-    default_config_tmpl={
-        # 核心
-        "id": "default",
-        "type": "bilibili",
-        "enable": False,
-        "hint": "非官方 API 适配器：需提供浏览器 Cookie 的 SESSDATA 与 bili_jct；网络参数可按需调整。",
-        "SESSDATA": "",
-        "bili_jct": "",
-        "device_id": "",
-        "user_agent": "",
-        # 訊息處理
-        "process_read_messages": False,
-        "read_prefetch_window": 1,
-        # 輪詢
-        "polling_interval": 5,
-        "min_polling_interval": 2,
-        "max_polling_interval": 30,
-        "max_retry_count": 3,
-        # 網絡
-        "timeout_total": 30,
-        "timeout_connect": 10,
-        "timeout_sock_read": 20,
-        "connection_limit": 100,
-        "connection_limit_per_host": 30,
-        "dns_cache_ttl": 300,
-        "keepalive_timeout": 60,
-        # API
-        "message_batch_size": 20,
-        "api_build_version": 0,
-        "api_mobi_app": "web",
-    },
+    "Bilibili 私信适配器",
+    default_config_tmpl=DEFAULT_CONFIG_TMPL,
+    config_metadata=CONFIG_METADATA,
+    i18n_resources=I18N_RESOURCES,
+    support_streaming_message=False,
     adapter_display_name="Bilibili",
     logo_path="assets/bilibili.svg",
 )
 class BilibiliAdapter(Platform):
-    """Bilibili Adapter"""
+    """Bilibili 私信平台适配器：轮询拉取私信并提交事件到 AstrBot 核心。"""
 
     def __init__(
         self, platform_config: dict, platform_settings: dict, event_queue: asyncio.Queue
     ):
-        super().__init__(event_queue)
+        super().__init__(platform_config, event_queue)
         logger.info("Bilibili Adapter 正在初始化...")
 
         # 配置驗證
         self._validate_config(platform_config)
 
         logger.info("Bilibili Adapter 配置驗證通過。")
-        self.config = platform_config
         self.settings = platform_settings
         self.poll_interval = platform_config.get("polling_interval", 5)
         self.min_poll_interval = platform_config.get("min_polling_interval", 2)
@@ -256,14 +96,9 @@ class BilibiliAdapter(Platform):
     def _validate_config(self, config: dict):
         """验证配置参数"""
         # 验证核心必填配置项
-        required_configs = {
-            "SESSDATA": "",
-            "bili_jct": "",
-            "device_id": "",
-            "user_agent": "",
-        }
+        required_configs = ("SESSDATA", "bili_jct", "device_id", "user_agent")
 
-        for config_key, default_value in required_configs.items():
+        for config_key in required_configs:
             value = config.get(config_key)
             if not value:
                 logger.critical(
@@ -337,6 +172,8 @@ class BilibiliAdapter(Platform):
                 sessdata=self.config["SESSDATA"],
                 bili_jct=self.config["bili_jct"],
                 device_id=self.config["device_id"],
+                buvid3=self.config.get("buvid3", ""),
+                buvid4=self.config.get("buvid4", ""),
                 user_agent=self.config["user_agent"],
                 # 網絡配置（可選）
                 timeout_total=self.config.get("timeout_total", 30),
@@ -441,7 +278,9 @@ class BilibiliAdapter(Platform):
 
                 # 抖動 ±10% 並夾持在最小/最大輪詢區間
                 j = 0.1 * self.current_poll_interval
-                jittered = self.current_poll_interval + ((random.random() * 2) - 1.0) * j
+                jittered = (
+                    self.current_poll_interval + ((random.random() * 2) - 1.0) * j
+                )
                 if jittered < self.min_poll_interval:
                     jittered = self.min_poll_interval
                 if jittered > self.max_poll_interval:
@@ -481,6 +320,7 @@ class BilibiliAdapter(Platform):
                     pass
             self.client = None
         logger.info("Bilibili Adapter 已结束运行。")
+
     async def _process_unread_session(self, session_info: dict):
         talker_id = session_info.get("talker_id")
         session_type = session_info.get("session_type")
@@ -507,10 +347,7 @@ class BilibiliAdapter(Platform):
                         and msg_data.get("sender_uid") != self._self_uid
                     ):
                         # 启动前收到的旧消息：仅 ACK 不回覆
-                        msg_ts = msg_data.get("timestamp", 0)
-                        # 兼容毫秒级时间戳
-                        if isinstance(msg_ts, (int, float)) and msg_ts > 10**12:
-                            msg_ts = int(msg_ts // 1000)
+                        msg_ts = _normalize_timestamp(msg_data.get("timestamp")) or 0
                         is_backlog = (
                             self._startup_ts is not None and msg_ts < self._startup_ts
                         )
@@ -542,7 +379,8 @@ class BilibiliAdapter(Platform):
             raise
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             logger.error(
-                f"處理 Session {talker_id} 的訊息時發生網絡/超時錯誤: {e}", exc_info=True
+                f"處理 Session {talker_id} 的訊息時發生網絡/超時錯誤: {e}",
+                exc_info=True,
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
             logger.error(
@@ -576,9 +414,7 @@ class BilibiliAdapter(Platform):
             )
 
             if messages_data is None:
-                logger.debug(
-                    f"回溯獲取 Session {talker_id} 消息失敗（已讀模式），跳過"
-                )
+                logger.debug(f"回溯獲取 Session {talker_id} 消息失敗（已讀模式），跳過")
                 return
 
             msgs = messages_data.get("messages") or []
@@ -596,12 +432,10 @@ class BilibiliAdapter(Platform):
                     continue  # 忽略自己發出的
 
                 # 啟動前的舊消息不處理
-                msg_ts = msg_data.get("timestamp", 0)
-                if isinstance(msg_ts, (int, float)) and msg_ts > 10**12:
-                    msg_ts = int(msg_ts // 1000)
+                msg_ts = _normalize_timestamp(msg_data.get("timestamp"))
                 if (
                     self._startup_ts is not None
-                    and isinstance(msg_ts, (int, float))
+                    and msg_ts is not None
                     and msg_ts < self._startup_ts
                 ):
                     continue
@@ -635,7 +469,9 @@ class BilibiliAdapter(Platform):
                 exc_info=True,
             )
 
-    def convert_message(self, data: dict, session_talker_id: int) -> Optional[AstrBotMessage]:
+    def convert_message(
+        self, data: dict, session_talker_id: int
+    ) -> Optional[AstrBotMessage]:
         msg_type = data.get("msg_type")
         sender_uid = data.get("sender_uid")
 
@@ -690,33 +526,28 @@ class BilibiliAdapter(Platform):
                             abm.message_str = "[圖片]"
                             # 成功回退則不中斷
                         else:
-                            logger.warning(f"無法解析 Bilibili 圖片訊息內容: {data.get('content')}")
+                            logger.warning(
+                                f"無法解析 Bilibili 圖片訊息內容: {data.get('content')}"
+                            )
                             return None
                     else:
-                        logger.warning(f"無法解析 Bilibili 圖片訊息內容: {data.get('content')}")
+                        logger.warning(
+                            f"無法解析 Bilibili 圖片訊息內容: {data.get('content')}"
+                        )
                         return None
                 except Exception:
-                    logger.warning(f"無法解析 Bilibili 圖片訊息內容: {data.get('content')}")
+                    logger.warning(
+                        f"無法解析 Bilibili 圖片訊息內容: {data.get('content')}"
+                    )
                     return None
         else:
             logger.debug(f"忽略不支援的 Bilibili 訊息類型: {msg_type}")
             return None
 
-        # 填充其他必要字段
-        # 统一时间戳解析与单位（支持字符串与毫秒级时间戳）
-        _ts_raw = data.get("timestamp")
-        ts_val = None
-        if isinstance(_ts_raw, (int, float)):
-            ts_val = int(_ts_raw)
-        elif isinstance(_ts_raw, str):
-            try:
-                ts_val = int(float(_ts_raw))
-            except Exception:
-                ts_val = None
+        # 填充其他必要字段（时间戳统一归一化为秒级）
+        ts_val = _normalize_timestamp(data.get("timestamp"))
         if ts_val is None:
             ts_val = int(datetime.now().timestamp())
-        if ts_val > 10**12:
-            ts_val = int(ts_val // 1000)
         try:
             abm.time = datetime.fromtimestamp(ts_val)
         except Exception:

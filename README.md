@@ -28,6 +28,8 @@ SESSDATA: 来自 Cookies
 bili_jct: 来自 Cookies
 device_id: 系统 UUID（或固定的自订字符串，需非空）
 user_agent: 浏览器 UA
+buvid3: 来自 Cookies（可选，留空时自动获取）
+buvid4: 来自 Cookies（可选，留空时自动获取）
 process_read_messages: 开启时，会处理近期的『已读』消息
 read_prefetch_window: 已读消息的回溯数量（范围 1-10，默认 1）
 ```
@@ -75,7 +77,7 @@ api_mobi_app: "web"         # 移動應用標識
 1.  登入账户
 2.  打开浏览器开发者工具 (F12)
 3.  切换到 `Application` -> `Cookies` -> `https://www.bilibili.com`
-4.  找到并获取 `SESSDATA` 和 `bili_jct` 的值
+4.  找到并获取 `SESSDATA` `bili_jct` `buvid3` `buvid4` 的值
 
 ### 获取 device_id
 
