@@ -548,12 +548,9 @@ class BilibiliAdapter(Platform):
         ts_val = _normalize_timestamp(data.get("timestamp"))
         if ts_val is None:
             ts_val = int(datetime.now().timestamp())
-        try:
-            abm.time = datetime.fromtimestamp(ts_val)
-        except Exception:
-            abm.time = datetime.now()
+        abm.timestamp = ts_val
         # 使用會話ID + 序號提高唯一性（msg_seqno 通常在會話作用域內唯一）
-        abm.id = f"{session_talker_id}-{data.get('msg_seqno')}"
+        abm.message_id = f"{session_talker_id}-{data.get('msg_seqno')}"
         abm.sender = MessageMember(
             user_id=str(sender_uid), nickname=""
         )  # Bilibili 不提供暱稱獲取

@@ -3,6 +3,6 @@ display_name: Bilibili 私信适配器
 author: Magstic, Gemini 2.5 Pro, Claude Opus 4, ChatGPT 5
 description: Bilibili 私信适配器，使用 Cookie 认证。支持收发文本与图片消息。
 short_desc: 接入 Bilibili 私信，支持收发文本与图片。
-version: 0.2.0
+version: 0.2.1
 repo: https://github.com/Hina-Chat/astrbot_plugin_bilibili_adapter
 astrbot_version: ">=4.25"

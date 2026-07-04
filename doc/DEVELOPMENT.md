@@ -83,7 +83,7 @@
 - **時間戳**：模組級 `_normalize_timestamp()` 統一處理數字/字符串/毫秒級輸入，三處調用（未讀、已讀、轉換）。
 - **轉換**：`convert_message()` 生成 `AstrBotMessage`：
   - 文本：`[Plain(text)]`；圖片：`[Image.fromURL(url)]`（含非標準 JSON 的正則回退）。
-  - `abm.id = f"{session_talker_id}-{msg_seqno}"`；`abm.session_id = str(session_talker_id)`；`abm.self_id` 取啟動時 UID。
+  - `abm.message_id = f"{session_talker_id}-{msg_seqno}"`；`abm.session_id = str(session_talker_id)`；`abm.self_id` 取啟動時 UID。
 - **退出**：循環結束統一關閉 client，`terminate()` 走 `shutdown()`。
 
 ## 7. 發送策略（bilibili_event.py）

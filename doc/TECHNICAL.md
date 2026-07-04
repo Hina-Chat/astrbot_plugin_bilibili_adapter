@@ -36,7 +36,7 @@ astrbot_plugin_bilibili_adapter/
 
 - **初始化 (`__init__`)**：`_validate_config()` 校驗必填項與數值範圍，設置輪詢與網絡參數。
 - **消息輪詢 (`run`)**：創建 `BilibiliClient` → `get_my_info()` 獲取自身 UID → 進入輪詢循環。忽略 `talker_id=0` 的系統通知；自適應輪詢間隔（含 ±10% 抖動）；網絡錯誤指數退避，超過 `max_retry_count` 後停止。
-- **消息轉換 (`convert_message`)**：轉換為 `AstrBotMessage`。文本為 `[Plain(text)]`，圖片為 `[Image.fromURL(url)]`；`abm.id = f"{session_talker_id}-{msg_seqno}"`；時間戳由模組級 `_normalize_timestamp()` 統一歸一化為秒級。
+- **消息轉換 (`convert_message`)**：轉換為 `AstrBotMessage`。文本為 `[Plain(text)]`，圖片為 `[Image.fromURL(url)]`；`abm.message_id = f"{session_talker_id}-{msg_seqno}"`；時間戳由模組級 `_normalize_timestamp()` 統一歸一化為秒級。
 - **事件提交 (`handle_msg`)**：組裝 `BilibiliPlatformEvent` 並 `commit_event()`。
 - **離線消息過濾**：以啟動時間戳 `_startup_ts` 過濾離線期間舊消息（只 ACK 不回覆）。
 
