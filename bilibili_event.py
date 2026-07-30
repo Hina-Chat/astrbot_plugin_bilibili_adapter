@@ -3,7 +3,7 @@ import asyncio
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, MessageChain
-from astrbot.api.message_components import Image, Plain
+from astrbot.api.message_components import Image, Plain, Reply
 from astrbot.api.platform import AstrBotMessage, PlatformMetadata
 
 from .bilibili_client import BilibiliClient
@@ -143,6 +143,8 @@ class BilibiliPlatformEvent(AstrMessageEvent):
                             logger.error("上傳圖片到 Bilibili 失敗。")
                     else:
                         logger.error("無法獲取圖片數據，無法發送圖片。")
+                elif isinstance(item, Reply):
+                    pass  # Bilibili 私信不支持引用回覆，靜默跳過
                 else:
                     await flush_text_buffer()
                     logger.warning(f"忽略不支持的消息組件: {item.__class__.__name__}")
