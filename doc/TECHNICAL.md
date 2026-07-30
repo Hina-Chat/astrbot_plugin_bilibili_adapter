@@ -46,7 +46,7 @@ astrbot_plugin_bilibili_adapter/
 
 - **會話與消息**：`get_new_sessions`, `get_messages`, `update_ack`。
 - **發送消息**：`send_text_message` / `send_image_message` → `_build_msg_payload()` 構造表單 → `_send_message()` 統一發送。
-- **WBI 簽名**：`_get_wbi_keys()` 從 nav 接口提取 img_key/sub_key（TTL 快取 12 小時），`_sign_wbi_params()` 生成 `wts` 與 `w_rid` 查詢參數。
+- **WBI 簽名**：`_get_wbi_keys()` 從 nav 接口提取 img_key/sub_key，使用 12 小時 TTL、協程刷新鎖、短連接重試及 7 天 stale-if-error 寬限快取；`_sign_wbi_params()` 生成 `wts` 與 `w_rid` 查詢參數。
 - **buvid 指紋**：`_ensure_buvid()` 從 finger/spi 接口獲取 buvid3/buvid4 並注入 Cookie。
 - **412 重試**：`_send_message()` 遇 412 時強制刷新 WBI 密鑰與 buvid 後重試一次。
 - **圖片上傳**：`upload_image` 帶 LRU + TTL 內存快取（按 path/url 鍵，容量 256，TTL 30 分鐘）。

@@ -62,7 +62,7 @@
 
 ### WBI 簽名與風控
 
-- `_get_wbi_keys()`：從 `/x/web-interface/nav` 響應的 `wbi_img` 提取 img_key/sub_key，TTL 快取 12 小時，支持 `force_refresh`。
+- `_get_wbi_keys()`：從 `/x/web-interface/nav` 響應的 `wbi_img` 提取 img_key/sub_key；使用 12 小時 TTL、刷新鎖、短連接重試，刷新失敗時可在 7 天寬限期內使用過期快取，並支持 `force_refresh`。
 - `_sign_wbi_params()`：調用 `bilibili_wbi.sign_params()` 生成帶 `wts`/`w_rid` 的查詢參數。
 - `_ensure_buvid()`：從 `/x/frontend/finger/spi` 獲取 buvid3/buvid4，注入 `self._cookies` 與 session cookie_jar。
 - `_send_message()`：簽名參數掛 query string，表單走 body；收到 412 時刷新密鑰與 buvid 後重試一次。
@@ -108,5 +108,6 @@
 - **官方圖片字段**：僅設置 `Image.file` 的本地快取、URL 或 base64 圖片均應成功解析、上傳並發送。
 - **接收者回退**：`session_id` 非數字時使用 `sender.user_id`。
 - **412 重試**：模擬發送被風控，驗證刷新 WBI/buvid 後重試一次的行為。
+- **WBI 暫時超時**：首次讀取超時後應自動重試；持續失敗時優先使用寬限期內的舊金鑰，無任何快取才返回失敗。
 - **離線消息**：啟動前的舊消息應只 ACK 不回覆。
 - **WebUI 表單**：確認各配置項顯示可讀標題與提示（zh-CN / en-US）。

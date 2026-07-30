@@ -140,10 +140,23 @@ class _Session:
     def __init__(self, responses):
         self.responses = list(responses)
         self.requested_urls = []
+        self.request_kwargs = []
 
-    def get(self, url):
+    def get(self, url, **kwargs):
         self.requested_urls.append(url)
+        self.request_kwargs.append(kwargs)
         return self.responses.pop(0)
+
+
+class _RequestError:
+    def __init__(self, error):
+        self.error = error
+
+    async def __aenter__(self):
+        raise self.error
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
 
 class IncomingImageClientTests(unittest.TestCase):
@@ -285,6 +298,79 @@ class OutgoingImageConversionTests(unittest.TestCase):
             client.send_image_message.assert_awaited_once_with(
                 3546881005193386, {"image_url": "uploaded"}
             )
+
+
+class WbiKeyResilienceTests(unittest.TestCase):
+    @staticmethod
+    def _make_client():
+        client = BILIBILI_CLIENT.BilibiliClient(
+            sessdata="sess",
+            bili_jct="csrf",
+            device_id="device",
+            user_agent="ua",
+        )
+        client._wbi_fetch_retry_delay_seconds = 0
+        return client
+
+    @staticmethod
+    def _nav_payload():
+        return {
+            "data": {
+                "wbi_img": {
+                    "img_url": "https://i0.hdslb.com/bfs/wbi/fresh-img.png",
+                    "sub_url": "https://i0.hdslb.com/bfs/wbi/fresh-sub.png",
+                }
+            }
+        }
+
+    def test_transient_timeout_retries_and_recovers(self):
+        client = self._make_client()
+        session = _Session(
+            [_RequestError(asyncio.TimeoutError("socket read")), _Response(200)]
+        )
+        client._get_session = AsyncMock(return_value=session)
+        client._safe_json_from_response = AsyncMock(return_value=self._nav_payload())
+
+        result = asyncio.run(client._get_wbi_keys())
+
+        self.assertEqual(result, ("fresh-img", "fresh-sub"))
+        self.assertEqual(len(session.requested_urls), 2)
+        self.assertEqual(session.request_kwargs[0]["headers"], {"Connection": "close"})
+
+    def test_expired_keys_are_used_when_refresh_keeps_timing_out(self):
+        client = self._make_client()
+        client._wbi_img_key = "cached-img"
+        client._wbi_sub_key = "cached-sub"
+        client._wbi_keys_expires_at = BILIBILI_CLIENT.time.time() - 1
+        client._wbi_fetch_max_attempts = 2
+        session = _Session(
+            [
+                _RequestError(asyncio.TimeoutError("first")),
+                _RequestError(asyncio.TimeoutError("second")),
+            ]
+        )
+        client._get_session = AsyncMock(return_value=session)
+
+        result = asyncio.run(client._get_wbi_keys())
+
+        self.assertEqual(result, ("cached-img", "cached-sub"))
+        self.assertEqual(len(session.requested_urls), 2)
+
+    def test_failure_without_any_cache_still_returns_none(self):
+        client = self._make_client()
+        client._wbi_fetch_max_attempts = 2
+        session = _Session(
+            [
+                _RequestError(asyncio.TimeoutError("first")),
+                _RequestError(asyncio.TimeoutError("second")),
+            ]
+        )
+        client._get_session = AsyncMock(return_value=session)
+
+        result = asyncio.run(client._get_wbi_keys())
+
+        self.assertIsNone(result)
+        self.assertEqual(len(session.requested_urls), 2)
 
 
 if __name__ == "__main__":

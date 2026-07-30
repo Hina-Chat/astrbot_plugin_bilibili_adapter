@@ -111,6 +111,12 @@ class BilibiliClient:
         self._wbi_sub_key: Optional[str] = None
         self._wbi_keys_expires_at: float = 0.0
         self._wbi_keys_ttl_seconds: int = 3600 * 12
+        # WBI nav 接口短暫不可用時，允許在有限寬限期內使用過期密鑰。
+        # 金鑰通常不會在 TTL 到點後立即失效；TTL 的目的主要是主動刷新。
+        self._wbi_keys_stale_grace_seconds: int = 3600 * 24 * 7
+        self._wbi_fetch_max_attempts: int = 3
+        self._wbi_fetch_retry_delay_seconds: float = 0.5
+        self._wbi_keys_lock = asyncio.Lock()
         # buvid 指紋 Cookie 是否已就緒
         self._buvid_ready: bool = False
         # 圖片快取（LRU + TTL）: {key: (image_info, expires_at)}
@@ -284,38 +290,91 @@ class BilibiliClient:
     async def _get_wbi_keys(
         self, force_refresh: bool = False
     ) -> Optional[Tuple[str, str]]:
-        """獲取 WBI 簽名密鑰（img_key, sub_key），帶 TTL 快取。"""
-        now = time.time()
-        if (
-            not force_refresh
-            and self._wbi_img_key
-            and self._wbi_sub_key
-            and now < self._wbi_keys_expires_at
-        ):
-            return self._wbi_img_key, self._wbi_sub_key
+        """獲取 WBI 簽名密鑰，支持 TTL、刷新合併、短重試與過期降級。"""
 
-        session = await self._get_session()
-        try:
-            async with session.get(NAV_URL) as response:
-                data = await self._safe_json_from_response(response)
-                wbi_img = None
-                if isinstance(data, dict):
-                    wbi_img = (data.get("data") or {}).get("wbi_img")
-                if isinstance(wbi_img, dict):
-                    img_key = extract_key_from_url(wbi_img.get("img_url", ""))
-                    sub_key = extract_key_from_url(wbi_img.get("sub_url", ""))
-                    if img_key and sub_key:
-                        self._wbi_img_key = img_key
-                        self._wbi_sub_key = sub_key
-                        self._wbi_keys_expires_at = now + self._wbi_keys_ttl_seconds
-                        logger.debug("WBI 簽名密鑰已更新。")
-                        return img_key, sub_key
-                logger.error(f"獲取 WBI 簽名密鑰失敗: {data}")
+        def cached_keys(allow_stale: bool = False) -> Optional[Tuple[str, str]]:
+            if not self._wbi_img_key or not self._wbi_sub_key:
                 return None
-        except asyncio.CancelledError:
-            raise
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            logger.error(f"獲取 WBI 簽名密鑰時發生網絡錯誤: {e}")
+            valid_until = self._wbi_keys_expires_at
+            if allow_stale:
+                valid_until += self._wbi_keys_stale_grace_seconds
+            if time.time() < valid_until:
+                return self._wbi_img_key, self._wbi_sub_key
+            return None
+
+        if not force_refresh:
+            keys = cached_keys()
+            if keys:
+                return keys
+
+        # 多個會話同時發送消息時只允許一個協程刷新，避免 nav 請求風暴。
+        async with self._wbi_keys_lock:
+            if not force_refresh:
+                keys = cached_keys()
+                if keys:
+                    return keys
+
+            session = await self._get_session()
+            last_error = "未知錯誤"
+            headers = {"Connection": "close"}
+
+            for attempt in range(1, self._wbi_fetch_max_attempts + 1):
+                try:
+                    # nav 並非高頻接口，使用短連接可避開連接池中已被服務端
+                    # 關閉但本地尚未察覺的 Keep-Alive 連接。
+                    async with session.get(
+                        NAV_URL, headers=headers
+                    ) as response:
+                        if response.status != 200:
+                            last_error = f"HTTP {response.status}"
+                        else:
+                            data = await self._safe_json_from_response(response)
+                            wbi_img = None
+                            if isinstance(data, dict):
+                                wbi_img = (data.get("data") or {}).get("wbi_img")
+                            if isinstance(wbi_img, dict):
+                                img_key = extract_key_from_url(
+                                    wbi_img.get("img_url", "")
+                                )
+                                sub_key = extract_key_from_url(
+                                    wbi_img.get("sub_url", "")
+                                )
+                                if img_key and sub_key:
+                                    self._wbi_img_key = img_key
+                                    self._wbi_sub_key = sub_key
+                                    self._wbi_keys_expires_at = (
+                                        time.time() + self._wbi_keys_ttl_seconds
+                                    )
+                                    logger.debug("WBI 簽名密鑰已更新。")
+                                    return img_key, sub_key
+                            last_error = "響應中不含有效的 wbi_img"
+                except asyncio.CancelledError:
+                    raise
+                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    last_error = f"{type(e).__name__}: {e}"
+
+                if attempt < self._wbi_fetch_max_attempts:
+                    logger.warning(
+                        "獲取 WBI 簽名密鑰失敗，"
+                        f"將重試 ({attempt}/{self._wbi_fetch_max_attempts}): "
+                        f"{last_error}"
+                    )
+                    await asyncio.sleep(
+                        self._wbi_fetch_retry_delay_seconds * attempt
+                    )
+
+            stale_keys = cached_keys(allow_stale=True)
+            if stale_keys:
+                logger.warning(
+                    "WBI 金鑰刷新失敗，暫時使用寬限期內的過期快取: "
+                    f"{last_error}"
+                )
+                return stale_keys
+
+            logger.error(
+                "獲取 WBI 簽名密鑰最終失敗，且無可用快取: "
+                f"{last_error}"
+            )
             return None
 
     async def _sign_wbi_params(
