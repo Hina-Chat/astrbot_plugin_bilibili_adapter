@@ -15,6 +15,19 @@ def _read_file_bytes(path: str) -> bytes:
         return f.read()
 
 
+def _image_cache_key(item: Image) -> Optional[str]:
+    """提取稳定且不会包含大段 base64 数据的图片缓存键。"""
+    for field in ("path", "url", "file"):
+        value = getattr(item, field, None)
+        if (
+            isinstance(value, str)
+            and value
+            and not value.startswith(("base64://", "data:"))
+        ):
+            return value
+    return None
+
+
 class BilibiliPlatformEvent(AstrMessageEvent):
     def get_message_outline(self) -> str:
         """重寫此方法以規避核心框架的遍歷問題，安全生成消息概要。
@@ -113,23 +126,25 @@ class BilibiliPlatformEvent(AstrMessageEvent):
                     await flush_text_buffer()
 
                     image_bytes: Optional[bytes] = None
-                    cache_key: Optional[str] = None
+                    cache_key = _image_cache_key(item)
 
-                    if hasattr(item, "path") and item.path:
-                        cache_key = item.path
+                    # raw 是部分舊插件使用的非標準字段，保留兼容；標準 Image
+                    # 統一走 AstrBot 的解析 API。官方元件把 URL/base64 放在
+                    # item.file，而不是 item.url。
+                    raw = getattr(item, "raw", None)
+                    if isinstance(raw, (bytes, bytearray, memoryview)) and raw:
+                        image_bytes = bytes(raw)
+                    else:
                         try:
+                            image_path = await item.convert_to_file_path()
                             image_bytes = await asyncio.to_thread(
-                                _read_file_bytes, item.path
+                                _read_file_bytes, image_path
                             )
                         except Exception as e:
-                            logger.error(f"從路徑讀取圖片失敗: {item.path}, 錯誤: {e}")
-                    elif hasattr(item, "url") and item.url:
-                        cache_key = item.url
-                        image_bytes = await self.client.download_image_from_url(
-                            item.url
-                        )
-                    elif hasattr(item, "raw") and item.raw:
-                        image_bytes = item.raw
+                            logger.error(
+                                "解析 AstrBot 圖片元件失敗，"
+                                f"無法取得可上傳的圖片數據: {e}"
+                            )
 
                     if image_bytes:
                         image_info = await self.client.upload_image(

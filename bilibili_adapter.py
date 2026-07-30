@@ -358,7 +358,7 @@ class BilibiliAdapter(Platform):
                             )
                         else:
                             # 使用 talker_id 作为会话标识，确保会话隔离
-                            abm = self.convert_message(msg_data, talker_id)
+                            abm = await self.convert_message(msg_data, talker_id)
                             if abm:
                                 await self.handle_msg(abm)
                         max_seqno_in_batch = max(
@@ -440,7 +440,7 @@ class BilibiliAdapter(Platform):
                 ):
                     continue
 
-                abm = self.convert_message(msg_data, talker_id)
+                abm = await self.convert_message(msg_data, talker_id)
                 if abm:
                     await self.handle_msg(abm)
                     if seq > max_seq_processed:
@@ -469,7 +469,7 @@ class BilibiliAdapter(Platform):
                 exc_info=True,
             )
 
-    def convert_message(
+    async def convert_message(
         self, data: dict, session_talker_id: int
     ) -> Optional[AstrBotMessage]:
         msg_type = data.get("msg_type")
@@ -510,8 +510,16 @@ class BilibiliAdapter(Platform):
                 image_url = content_data.get("url")
                 if not image_url:
                     return None
-                abm.message = [Image.fromURL(image_url)]
-                abm.message_str = "[圖片]"
+                image_data = await self.client.download_incoming_image(image_url)
+                if not image_data:
+                    logger.warning(
+                        f"無法下載 Bilibili 圖片訊息: url={image_url}"
+                    )
+                    abm.message = [Plain("[圖片下載失敗]")]
+                    abm.message_str = "[圖片下載失敗]"
+                else:
+                    abm.message = [Image.fromBytes(image_data)]
+                    abm.message_str = "[圖片]"
             except (json.JSONDecodeError, TypeError):
                 # 回退：content 可能是非標準 JSON 字串，嘗試用正則抓取 url
                 try:
@@ -522,8 +530,16 @@ class BilibiliAdapter(Platform):
                             m = re.search(r"'url'\s*:\s*'([^'\\]+)'", content_raw)
                         if m:
                             url = m.group(1)
-                            abm.message = [Image.fromURL(url)]
-                            abm.message_str = "[圖片]"
+                            image_data = await self.client.download_incoming_image(url)
+                            if not image_data:
+                                logger.warning(
+                                    f"無法下載 Bilibili 圖片訊息: url={url}"
+                                )
+                                abm.message = [Plain("[圖片下載失敗]")]
+                                abm.message_str = "[圖片下載失敗]"
+                            else:
+                                abm.message = [Image.fromBytes(image_data)]
+                                abm.message_str = "[圖片]"
                             # 成功回退則不中斷
                         else:
                             logger.warning(

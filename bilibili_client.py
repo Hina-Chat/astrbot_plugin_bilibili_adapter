@@ -4,6 +4,7 @@ import asyncio
 import mimetypes
 from typing import Optional, Tuple
 from collections import OrderedDict
+from urllib.parse import urlsplit
 
 import aiohttp
 from astrbot.api import logger
@@ -23,6 +24,11 @@ UPLOAD_IMAGE_URL = f"{API_BASE_URL}/x/dynamic/feed/draw/upload_bfs"
 UPDATE_ACK_URL = f"{VC_API_BASE_URL}/session_svr/v1/session_svr/update_ack"
 NAV_URL = f"{API_BASE_URL}/x/web-interface/nav"
 FINGER_SPI_URL = f"{API_BASE_URL}/x/frontend/finger/spi"
+
+# 私信圖片必須由帶有 Bilibili 認證上下文的會話下載，否則 CDN 可能返回 412。
+# 此認證下載路徑僅允許 Bilibili 自有圖片域名，避免消息內容中的惡意 URL 外洩憑證。
+_BILIBILI_IMAGE_HOST_SUFFIXES = (".biliimg.com", ".hdslb.com")
+_MAX_INCOMING_IMAGE_BYTES = 20 * 1024 * 1024
 
 
 class BilibiliClient:
@@ -495,6 +501,107 @@ class BilibiliClient:
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             logger.error(f"從 URL 下載圖片時發生網絡錯誤: {url}, 錯誤: {e}")
             return None
+
+    @staticmethod
+    def _is_trusted_bilibili_image_url(url: str) -> bool:
+        """判斷 URL 是否為可安全攜帶 Bilibili Cookie 訪問的圖片 CDN。"""
+        try:
+            parsed = urlsplit(url)
+            hostname = (parsed.hostname or "").lower().rstrip(".")
+            return (
+                parsed.scheme.lower() == "https"
+                and bool(hostname)
+                and any(
+                    hostname.endswith(suffix)
+                    for suffix in _BILIBILI_IMAGE_HOST_SUFFIXES
+                )
+            )
+        except (TypeError, ValueError):
+            return False
+
+    async def download_incoming_image(self, url: str) -> Optional[bytes]:
+        """下載收到的 Bilibili 私信圖片。
+
+        私信 CDN 會校驗瀏覽器上下文。此方法使用適配器的認證會話（Cookie、
+        User-Agent、Referer、Origin），並在交付 AstrBot 核心前將圖片讀入內存，
+        避免核心稍後以匿名請求重複下載而觸發 HTTP 412。
+        """
+        if not self._is_trusted_bilibili_image_url(url):
+            logger.error(f"拒絕從非 Bilibili 圖片域名下載私信圖片: {url}")
+            return None
+
+        session = await self._get_session()
+        await self._ensure_buvid()
+
+        for attempt in range(2):
+            try:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        content_length = response.content_length
+                        if (
+                            content_length is not None
+                            and content_length > _MAX_INCOMING_IMAGE_BYTES
+                        ):
+                            logger.error(
+                                "Bilibili 私信圖片超過大小限制: "
+                                f"url={url}, content_length={content_length}, "
+                                f"limit={_MAX_INCOMING_IMAGE_BYTES}"
+                            )
+                            return None
+
+                        image_data = await response.read()
+                        if not image_data:
+                            logger.error(f"Bilibili 私信圖片內容為空: {url}")
+                            return None
+                        if len(image_data) > _MAX_INCOMING_IMAGE_BYTES:
+                            logger.error(
+                                "Bilibili 私信圖片超過大小限制: "
+                                f"url={url}, size={len(image_data)}, "
+                                f"limit={_MAX_INCOMING_IMAGE_BYTES}"
+                            )
+                            return None
+
+                        content_type = (
+                            response.headers.get("Content-Type", "")
+                            .split(";", 1)[0]
+                            .strip()
+                            .lower()
+                        )
+                        if content_type and not content_type.startswith("image/"):
+                            logger.warning(
+                                "Bilibili 私信圖片響應類型異常: "
+                                f"url={url}, content_type={content_type}"
+                            )
+
+                        logger.debug(
+                            f"Bilibili 私信圖片下載成功: url={url}, "
+                            f"size={len(image_data)}"
+                        )
+                        return image_data
+
+                    if response.status == 412 and attempt == 0:
+                        logger.warning(
+                            "Bilibili 私信圖片下載被風控攔截 (412)，"
+                            "刷新 buvid 後重試一次……"
+                        )
+                        self._buvid_ready = False
+                        await self._ensure_buvid()
+                        continue
+
+                    logger.error(
+                        "下載 Bilibili 私信圖片失敗: "
+                        f"url={url}, status={response.status}"
+                    )
+                    return None
+            except asyncio.CancelledError:
+                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.error(
+                    f"下載 Bilibili 私信圖片時發生網絡錯誤: url={url}, 錯誤: {e}"
+                )
+                return None
+
+        return None
 
     async def upload_image(
         self,

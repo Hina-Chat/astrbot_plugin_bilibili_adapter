@@ -36,7 +36,7 @@ astrbot_plugin_bilibili_adapter/
 
 - **初始化 (`__init__`)**：`_validate_config()` 校驗必填項與數值範圍，設置輪詢與網絡參數。
 - **消息輪詢 (`run`)**：創建 `BilibiliClient` → `get_my_info()` 獲取自身 UID → 進入輪詢循環。忽略 `talker_id=0` 的系統通知；自適應輪詢間隔（含 ±10% 抖動）；網絡錯誤指數退避，超過 `max_retry_count` 後停止。
-- **消息轉換 (`convert_message`)**：轉換為 `AstrBotMessage`。文本為 `[Plain(text)]`，圖片為 `[Image.fromURL(url)]`；`abm.message_id = f"{session_talker_id}-{msg_seqno}"`；時間戳由模組級 `_normalize_timestamp()` 統一歸一化為秒級。
+- **消息轉換 (`convert_message`)**：異步轉換為 `AstrBotMessage`。文本為 `[Plain(text)]`；圖片由 Bilibili 認證會話下載並限制來源/大小，再以 `[Image.fromBytes(data)]` 交付核心，避免私信 CDN 的 412 防盜鏈錯誤；`abm.message_id = f"{session_talker_id}-{msg_seqno}"`；時間戳由模組級 `_normalize_timestamp()` 統一歸一化為秒級。
 - **事件提交 (`handle_msg`)**：組裝 `BilibiliPlatformEvent` 並 `commit_event()`。
 - **離線消息過濾**：以啟動時間戳 `_startup_ts` 過濾離線期間舊消息（只 ACK 不回覆）。
 
@@ -56,7 +56,7 @@ astrbot_plugin_bilibili_adapter/
 
 `BilibiliPlatformEvent(AstrMessageEvent)`：
 
-- **發送 (`send`)**：連續 `Plain` 合併為單條私信；圖片支持 `path`/`url`/`raw` 三種來源，先上傳後發送；本地讀檔用 `asyncio.to_thread()` 避免阻塞。
+- **發送 (`send`)**：連續 `Plain` 合併為單條私信；圖片透過 AstrBot `Image.convert_to_file_path()` 解析官方 `file` 主字段及 `path`，並兼容舊式 `raw`，先上傳後發送；本地讀檔用 `asyncio.to_thread()` 避免阻塞。
 - **接收者解析**：優先 `session_id` 轉整型，失敗回退 `sender.user_id`。
 - **概要生成**：`get_message_outline()` 兼容 `MessageChain` 與 `list` 兩種形態。
 

@@ -81,8 +81,8 @@
 - **未讀處理**：`_process_unread_session()` → `get_messages()` → 逐條轉換提交 → `update_ack()`。
 - **已讀處理（可選）**：`unread_count == 0` 且 ACK 提升且 `process_read_messages=true` 時觸發 `_process_recent_read_session()`，按 `read_prefetch_window` 回溯，結合 `_startup_ts` 與已處理水位去重。
 - **時間戳**：模組級 `_normalize_timestamp()` 統一處理數字/字符串/毫秒級輸入，三處調用（未讀、已讀、轉換）。
-- **轉換**：`convert_message()` 生成 `AstrBotMessage`：
-  - 文本：`[Plain(text)]`；圖片：`[Image.fromURL(url)]`（含非標準 JSON 的正則回退）。
+- **轉換**：異步 `convert_message()` 生成 `AstrBotMessage`：
+  - 文本：`[Plain(text)]`；圖片由認證客戶端預先下載後轉為 `[Image.fromBytes(data)]`（含非標準 JSON 的正則回退），避免 AstrBot 核心匿名訪問私信 CDN 觸發 412。
   - `abm.message_id = f"{session_talker_id}-{msg_seqno}"`；`abm.session_id = str(session_talker_id)`；`abm.self_id` 取啟動時 UID。
 - **退出**：循環結束統一關閉 client，`terminate()` 走 `shutdown()`。
 
@@ -90,7 +90,7 @@
 
 - **文本合併**：遍歷消息鏈，連續 `Plain` 緩衝合併為單條私信；遇圖片或結尾時沖刷。
 - **接收者解析**：`session_id` 轉整型優先，失敗回退 `message_obj.sender.user_id`。
-- **圖片處理**：支持 `path`/`url`/`raw` 三種來源；本地讀檔用 `asyncio.to_thread()`；上傳命中快取則復用。
+- **圖片處理**：標準元件透過 `Image.convert_to_file_path()` 統一解析 `file`（URL、file URI、base64）及 `path`，並兼容舊插件的 `raw` 字段；本地讀檔用 `asyncio.to_thread()`；上傳命中快取則復用。
 - **可觀測性**：不支持的組件記錄 `warning`。
 
 ## 8. 開發規範
@@ -105,6 +105,7 @@
 
 - **文本聚合**：`Plain('A'), Plain('B')` 僅發一條 `AB`。
 - **圖文混排**：文本→圖片→文本，圖片前應先沖刷文本緩衝。
+- **官方圖片字段**：僅設置 `Image.file` 的本地快取、URL 或 base64 圖片均應成功解析、上傳並發送。
 - **接收者回退**：`session_id` 非數字時使用 `sender.user_id`。
 - **412 重試**：模擬發送被風控，驗證刷新 WBI/buvid 後重試一次的行為。
 - **離線消息**：啟動前的舊消息應只 ACK 不回覆。
